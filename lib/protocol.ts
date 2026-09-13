@@ -1,0 +1,3 @@
+import { z } from 'zod';
+export const commandSchema=z.object({type:z.enum(['JOIN_ROOM','START_GAME','ASK','ANSWER','GUESS','RESYNC']),commandId:z.string().uuid().optional(),roomCode:z.string().regex(/^[A-Z0-9-]{3,12}$/),playerId:z.string().min(8).max(80),sessionToken:z.string().min(32).max(128).optional(),name:z.string().max(24).optional(),lastVersion:z.number().int().nonnegative().optional(),cardsPerPlayer:z.number().int().min(1).max(10).optional(),targetId:z.string().min(8).max(80).optional(),question:z.string().min(1).max(120).optional(),yes:z.boolean().optional(),cardId:z.string().min(2).max(8).optional()});
+export type ValidCommand=z.infer<typeof commandSchema>;

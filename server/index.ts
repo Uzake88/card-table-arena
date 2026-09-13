@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initial, reduce, CardfallState, Action } from '../lib/games/cardfall/engine';
 import { publicProjection } from '../lib/games/cardfall/projection';
+import { commandSchema } from '../lib/protocol';
 
 type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'RESYNC'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string };
 type Client = { socket:WebSocket; playerId:string; roomCode:string; sessionToken:string };
@@ -16,10 +17,10 @@ function detachSocket(socket:WebSocket){for(const r of rooms.values())for(const 
 function send(c:Client,r:Room){c.socket.send(JSON.stringify({type:'STATE',version:r.version,hostId:r.hostId,state:publicProjection(r.state,c.playerId)}));}
 function broadcast(r:Room){for(const c of r.clients)if(c.socket.readyState===WebSocket.OPEN)send(c,r);}
 function actionFor(cmd:Command):Action|undefined{if(cmd.type==='START_GAME')return{type:'START',cardsPerPlayer:cmd.cardsPerPlayer??5};if(cmd.type==='ASK')return{type:'ASK',actorId:cmd.playerId,targetId:cmd.targetId!,question:cmd.question!};if(cmd.type==='ANSWER')return{type:'ANSWER',actorId:cmd.playerId,yes:!!cmd.yes};if(cmd.type==='GUESS')return{type:'GUESS',actorId:cmd.playerId,targetId:cmd.targetId!,cardId:cmd.cardId!};}
-function validCommand(c:Command){if(!c||typeof c.roomCode!=='string'||!/^[A-Z0-9-]{3,12}$/.test(c.roomCode)||typeof c.playerId!=='string'||c.playerId.length<8||c.playerId.length>80)throw Error('Invalid room command');}
+function validCommand(raw:unknown):Command{const parsed=commandSchema.safeParse(raw);if(!parsed.success)throw Error('Invalid room command');return parsed.data as Command;}
 const http=createServer((_,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({ok:true,rooms:rooms.size}))});
-const wss=new WebSocketServer({server:http});
-wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',raw=>{try{const cmd=JSON.parse(raw.toString()) as Command;validCommand(cmd);const r=getRoom(cmd.roomCode);
+const wss=new WebSocketServer({server:http,maxPayload:64*1024});
+wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',raw=>{try{const cmd=validCommand(JSON.parse(raw.toString()));const r=getRoom(cmd.roomCode);
  if(cmd.type==='JOIN_ROOM'){
   if(!cmd.commandId)throw Error('commandId is required');
   let existing=cmd.sessionToken ? [...r.sessions.values()].find(s=>s.token===cmd.sessionToken) : undefined;

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: card-table-arena-web
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_REALTIME_URL
+        sync: false
+  - type: web
+    name: card-table-arena-realtime
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerCommand: npm run realtime
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: "8787"

@@ -1,0 +1,3 @@
+import { describe, expect, it } from 'vitest';
+import { dealHoldem, reveal } from './engine';
+describe('Holdem engine',()=>{it('deals unique hole cards and five community cards',()=>{const s=dealHoldem(['a','b'],4);expect(s.holes.a).toHaveLength(2);expect(s.community).toHaveLength(5);expect(new Set([...s.holes.a,...s.holes.b,...s.community].map(c=>c.id)).size).toBe(9);});it('advances streets in order',()=>{let s=dealHoldem(['a','b']);expect(s.phase).toBe('preflop');s=reveal(s);expect(s.phase).toBe('flop');s=reveal(s);expect(s.phase).toBe('turn');s=reveal(s);expect(s.phase).toBe('river');s=reveal(s);expect(s.phase).toBe('showdown');});});
