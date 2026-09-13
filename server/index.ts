@@ -5,16 +5,16 @@ import { initial, reduce, CardfallState, Action } from '../lib/games/cardfall/en
 import { publicProjection } from '../lib/games/cardfall/projection';
 import { commandSchema } from '../lib/protocol';
 
-type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'RESYNC'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string };
+type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'RESYNC'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; gameId?:string; settings?:Record<string,string|number|boolean>; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string };
 type Client = { socket:WebSocket; playerId:string; roomCode:string; sessionToken:string };
 type PlayerSession = { playerId:string; token:string };
 type CommandRecord = { playerId:string; fingerprint:string };
-type Room = { code:string; hostId:string; state:CardfallState; version:number; clients:Set<Client>; sessions:Map<string,PlayerSession>; seen:Map<string,CommandRecord> };
+type Room = { code:string; hostId:string; gameId:string; settings:Record<string,string|number|boolean>; state:CardfallState; version:number; clients:Set<Client>; sessions:Map<string,PlayerSession>; seen:Map<string,CommandRecord> };
 const rooms=new Map<string,Room>();
-const makeRoom=(code:string):Room=>{const r:Room={code,hostId:'',state:initial([]),version:0,clients:new Set(),sessions:new Map(),seen:new Map()}; rooms.set(code,r); return r;};
+const makeRoom=(code:string):Room=>{const r:Room={code,hostId:'',gameId:'cardfall',settings:{cardsPerPlayer:5,timer:'off'},state:initial([]),version:0,clients:new Set(),sessions:new Map(),seen:new Map()}; rooms.set(code,r); return r;};
 const getRoom=(code:string)=>rooms.get(code)??makeRoom(code);
 function detachSocket(socket:WebSocket){for(const r of rooms.values())for(const c of [...r.clients])if(c.socket===socket)r.clients.delete(c);}
-function send(c:Client,r:Room){c.socket.send(JSON.stringify({type:'STATE',version:r.version,hostId:r.hostId,state:publicProjection(r.state,c.playerId)}));}
+function send(c:Client,r:Room){c.socket.send(JSON.stringify({type:'STATE',version:r.version,hostId:r.hostId,gameId:r.gameId,settings:r.settings,state:publicProjection(r.state,c.playerId)}));}
 function broadcast(r:Room){for(const c of r.clients)if(c.socket.readyState===WebSocket.OPEN)send(c,r);}
 function actionFor(cmd:Command):Action|undefined{if(cmd.type==='START_GAME')return{type:'START',cardsPerPlayer:cmd.cardsPerPlayer??5};if(cmd.type==='ASK')return{type:'ASK',actorId:cmd.playerId,targetId:cmd.targetId!,question:cmd.question!};if(cmd.type==='ANSWER')return{type:'ANSWER',actorId:cmd.playerId,yes:!!cmd.yes};if(cmd.type==='GUESS')return{type:'GUESS',actorId:cmd.playerId,targetId:cmd.targetId!,cardId:cmd.cardId!};}
 function validCommand(raw:unknown):Command{const parsed=commandSchema.safeParse(raw);if(!parsed.success)throw Error('Invalid room command');return parsed.data as Command;}
@@ -26,7 +26,7 @@ wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',ra
   let existing=cmd.sessionToken ? [...r.sessions.values()].find(s=>s.token===cmd.sessionToken) : undefined;
   if(cmd.sessionToken&&!existing)throw Error('Invalid player session');
   if(cmd.sessionToken&&existing&&cmd.playerId!==existing.playerId)throw Error('Player identity does not match session');
-  if(!existing){if(r.state.phase!=='lobby')throw Error('This game has already started');if(r.state.players.length>=8)throw Error('Room is full');const canonicalId=randomUUID();if(!r.hostId)r.hostId=canonicalId;const token=randomBytes(24).toString('hex');existing={playerId:canonicalId,token};r.sessions.set(canonicalId,existing);r.state.players.push({id:canonicalId,name:(cmd.name||'Guest').trim().slice(0,24)||'Guest',hand:[],removed:[],correctGuesses:0});}
+  if(!existing){if(r.state.phase!=='lobby')throw Error('This game has already started');if(r.state.players.length>=8)throw Error('Room is full');const canonicalId=randomUUID();if(!r.hostId){r.hostId=canonicalId;r.gameId=cmd.gameId||'cardfall';r.settings=cmd.settings||r.settings;}const token=randomBytes(24).toString('hex');existing={playerId:canonicalId,token};r.sessions.set(canonicalId,existing);r.state.players.push({id:canonicalId,name:(cmd.name||'Guest').trim().slice(0,24)||'Guest',hand:[],removed:[],correctGuesses:0});}
   detachSocket(socket); client={socket,playerId:existing.playerId,roomCode:r.code,sessionToken:existing.token}; for(const old of [...r.clients])if(old.playerId===client.playerId)r.clients.delete(old); r.clients.add(client); socket.send(JSON.stringify({type:'WELCOME',sessionToken:client.sessionToken,playerId:client.playerId,hostId:r.hostId})); send(client,r); broadcast(r); return;
  }
  if(!client||client.playerId!==cmd.playerId)throw Error('Join the room first');
