@@ -5,7 +5,7 @@ import { initial, reduce, CardfallState, Action } from '../lib/games/cardfall/en
 import { publicProjection } from '../lib/games/cardfall/projection';
 import { commandSchema } from '../lib/protocol';
 
-type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'RESYNC'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; gameId?:string; settings?:Record<string,string|number|boolean>; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string };
+type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'CHAT'|'RESYNC'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; gameId?:string; settings?:Record<string,string|number|boolean>; message?:string; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string };
 type Client = { socket:WebSocket; playerId:string; roomCode:string; sessionToken:string };
 type PlayerSession = { playerId:string; token:string };
 type CommandRecord = { playerId:string; fingerprint:string };
@@ -30,13 +30,20 @@ wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',ra
   detachSocket(socket); client={socket,playerId:existing.playerId,roomCode:r.code,sessionToken:existing.token}; for(const old of [...r.clients])if(old.playerId===client.playerId)r.clients.delete(old); r.clients.add(client); socket.send(JSON.stringify({type:'WELCOME',sessionToken:client.sessionToken,playerId:client.playerId,hostId:r.hostId})); send(client,r); broadcast(r); return;
  }
  if(!client||client.playerId!==cmd.playerId)throw Error('Join the room first');
- if(client.roomCode!==cmd.roomCode)throw Error('Socket is bound to another room');
- if(cmd.sessionToken!==client.sessionToken||r.sessions.get(client.playerId)?.token!==cmd.sessionToken)throw Error('Invalid player session');
+ const sessionClient=client;
+ if(sessionClient.roomCode!==cmd.roomCode)throw Error('Socket is bound to another room');
+ if(cmd.sessionToken!==sessionClient.sessionToken||r.sessions.get(sessionClient.playerId)?.token!==cmd.sessionToken)throw Error('Invalid player session');
  if(!cmd.commandId)throw Error('commandId is required');
  if(cmd.type==='RESYNC'){send(client,r);return;}
  const fingerprint=JSON.stringify({...cmd,sessionToken:undefined});
  const prior=r.seen.get(cmd.commandId); if(prior){if(prior.playerId!==client.playerId||prior.fingerprint!==fingerprint)throw Error('Command id already used');send(client,r);return;}
  if(cmd.lastVersion!==undefined&&cmd.lastVersion!==r.version)throw Error('STALE_STATE');
+ if(cmd.type==='CHAT'){
+  const text=cmd.message?.trim(); if(!text)throw Error('Message cannot be empty');
+  const player=r.state.players.find(p=>p.id===sessionClient.playerId); if(!player)throw Error('Player is not in this room');
+  r.state={...r.state,events:[...r.state.events,{id:randomUUID(),text:`${player.name}: ${text}`,tone:'chat'}]};
+  r.version++; r.seen.set(cmd.commandId,{playerId:sessionClient.playerId,fingerprint}); broadcast(r); return;
+ }
  if(cmd.type==='START_GAME'&&client.playerId!==r.hostId)throw Error('Only the host can deal');
  if(cmd.type==='START_GAME'&&r.state.phase!=='lobby')throw Error('The game has already started');
  if(cmd.type==='ANSWER'&&typeof cmd.yes!=='boolean')throw Error('Answer must be yes or no');

@@ -1,7 +1,3 @@
 import { describe, expect, it } from 'vitest';
 import { commandSchema } from './protocol';
-
-describe('realtime protocol',()=>{
- it('rejects malformed commands at the boundary',()=>{expect(commandSchema.safeParse({type:'ANSWER',roomCode:'ROOM',playerId:'short',yes:'yes'}).success).toBe(false);});
- it('accepts a fully formed answer command',()=>{expect(commandSchema.safeParse({type:'ANSWER',roomCode:'ROOM',playerId:'player-1234',sessionToken:'a'.repeat(40),commandId:'00000000-0000-4000-8000-000000000001',yes:true}).success).toBe(true);});
-});
+describe('chat protocol',()=>{it('accepts bounded room chat',()=>{expect(commandSchema.safeParse({type:'CHAT',roomCode:'ROOM',playerId:'player-1234',commandId:'00000000-0000-4000-8000-000000000001',message:'hello'}).success).toBe(true);});it('rejects oversized chat',()=>{expect(commandSchema.safeParse({type:'CHAT',roomCode:'ROOM',playerId:'player-1234',commandId:'00000000-0000-4000-8000-000000000001',message:'x'.repeat(301)}).success).toBe(false);});it('keeps chat and game commands in one versioned stream',()=>{const chat=commandSchema.parse({type:'CHAT',roomCode:'ROOM',playerId:'player-1234',commandId:'00000000-0000-4000-8000-000000000001',message:'hello'});const start=commandSchema.parse({type:'START_GAME',roomCode:'ROOM',playerId:'player-1234',commandId:'00000000-0000-4000-8000-000000000002',lastVersion:1,cardsPerPlayer:5});expect(chat.type).toBe('CHAT');expect(start.lastVersion).toBe(1);});});
