@@ -24,10 +24,14 @@ export type LastTopple = {
   targetId: string;
 };
 
+export type TurnReason = 'move' | 'answer' | 'setup' | 'finished';
+
 export type CardfallState = {
   phase: 'lobby' | 'playing' | 'finished';
   players: Player[];
   turn: number;
+  turnNumber: number;
+  turnReason: TurnReason;
   cardsPerPlayer: number;
   events: CardfallEvent[];
   ranking: string[];
@@ -50,6 +54,15 @@ const nextTurn = (s: CardfallState, idx: number) => {
   return idx;
 };
 
+const setTurn = (s: CardfallState, index: number, reason: Exclude<TurnReason, 'setup' | 'finished'>) => {
+  if (!s.players[index] || s.players[index].hand.length === 0) {
+    throw Error('No eligible player for turn');
+  }
+  if (s.turn !== index) s.turnNumber++;
+  s.turn = index;
+  s.turnReason = reason;
+};
+
 const makeEvent = (
   kind: CardfallEventKind,
   text: string,
@@ -61,6 +74,8 @@ export function initial(players: Pick<Player, 'id' | 'name'>[]): CardfallState {
     phase: 'lobby',
     players: players.map((p) => ({ ...p, hand: [], removed: [], correctGuesses: 0 })),
     turn: 0,
+    turnNumber: 0,
+    turnReason: 'setup',
     cardsPerPlayer: 5,
     events: [],
     ranking: [],
@@ -84,6 +99,8 @@ export function reduce(state: CardfallState, action: Action): CardfallState {
     });
     s.phase = 'playing';
     s.turn = 0;
+    s.turnNumber = 0;
+    s.turnReason = 'setup';
     s.events.push(makeEvent('deal', `The table dealt ${n} cards to each player.`, { tone: 'deal' }));
     return s;
   }
@@ -114,7 +131,7 @@ export function reduce(state: CardfallState, action: Action): CardfallState {
         question,
       }),
     );
-    s.turn = s.players.indexOf(target);
+    setTurn(s, s.players.indexOf(target), 'answer');
     return s;
   }
 
@@ -134,7 +151,7 @@ export function reduce(state: CardfallState, action: Action): CardfallState {
       }),
     );
     delete s.pendingQuestion;
-    s.turn = nextTurn(s, s.turn);
+    setTurn(s, nextTurn(s, s.turn), 'move');
     return s;
   }
 
@@ -152,7 +169,7 @@ export function reduce(state: CardfallState, action: Action): CardfallState {
           tone: 'miss',
         }),
       );
-      s.turn = nextTurn(s, s.turn);
+      setTurn(s, nextTurn(s, s.turn), 'move');
       return s;
     }
 
@@ -189,10 +206,11 @@ export function reduce(state: CardfallState, action: Action): CardfallState {
     const alive = s.players.filter((p) => p.hand.length);
     if (alive.length <= 1) {
       s.phase = 'finished';
+      s.turnReason = 'finished';
       if (alive[0]) s.ranking.push(alive[0].id);
       s.events.push(makeEvent('win', `${alive[0]?.name ?? 'The table'} wins Cardfall.`, { tone: 'win' }));
     } else {
-      s.turn = nextTurn(s, s.turn);
+      setTurn(s, nextTurn(s, s.turn), 'move');
     }
     return s;
   }
