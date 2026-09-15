@@ -42,7 +42,13 @@ wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',ra
  if(cmd.type==='CHAT'){
   const text=cmd.message?.trim(); if(!text)throw Error('Message cannot be empty');
   const player=r.state.players.find(p=>p.id===sessionClient.playerId); if(!player)throw Error('Player is not in this room');
-  r.state={...r.state,events:[...r.state.events,{id:randomUUID(),text:`${player.name}: ${text}`,tone:'chat'}]};
+  if(r.gameId==='cardfall'){
+   const state=r.state as CardfallState;
+   r.state={...state,events:[...state.events,{id:randomUUID(),kind:'chat',actorId:player.id,text:`${player.name}: ${text}`,tone:'chat'}]};
+  } else {
+   const state=r.state as RuntimeState;
+   r.state={...state,events:[...state.events,{id:randomUUID(),text:`${player.name}: ${text}`,tone:'chat'}]};
+  }
   r.version++; r.seen.set(cmd.commandId,{playerId:sessionClient.playerId,fingerprint}); broadcast(r); return;
  }
  if(cmd.type==='START_GAME'&&client.playerId!==r.hostId)throw Error('Only the host can deal');
