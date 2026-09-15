@@ -61,6 +61,32 @@ test.describe('Card Table Arena guest multiplayer', () => {
     await guest.close();
   });
 
+  test('host-selected cards per player controls each private hand', async () => {
+    const host = await browser.newContext();
+    const guest = await browser.newContext();
+    const hp = await host.newPage();
+    const gp = await guest.newPage();
+
+    await hp.goto('/');
+    await chooseGame(hp, 'Cardfall', 'Host');
+    await hp.getByLabel('Cards per player').fill('3');
+    await createTable(hp);
+    const room = await hp.locator('.invite-code').innerText();
+
+    await gp.goto('/');
+    await joinTable(gp, room, 'Guest');
+    await hp.getByRole('button', { name: 'Deal the cards' }).click();
+
+    await expect(hp.locator('.playing-card')).toHaveCount(3);
+    await expect(gp.locator('.playing-card')).toHaveCount(3);
+    await expect(hp.locator('.mini-back')).toHaveCount(3);
+
+    await hp.close();
+    await gp.close();
+    await host.close();
+    await guest.close();
+  });
+
   test('Cardfall question and Yes/No answer rotate the turn', async () => {
     const host = await browser.newContext();
     const guest = await browser.newContext();
