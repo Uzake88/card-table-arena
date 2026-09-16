@@ -7,6 +7,7 @@ export type Player = {
   hand: Card[];
   removed: Card[];
   correctGuesses: number;
+  ready?: boolean;
   eliminatedAt?: number;
 };
 

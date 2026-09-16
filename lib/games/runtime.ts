@@ -6,7 +6,7 @@ import { dealHighCard } from './high-card/engine';
 import type { GameId } from './catalog';
 
 export type RuntimeGameId=Exclude<GameId,'cardfall'>;
-export type RuntimePlayer={id:string;name:string;hand:Card[];removed:Card[];correctGuesses:number;stood?:boolean;revealed?:boolean;chips?:number};
+export type RuntimePlayer={id:string;name:string;hand:Card[];removed:Card[];correctGuesses:number;stood?:boolean;revealed?:boolean;chips?:number;ready?:boolean};
 export type RuntimeState={gameId:RuntimeGameId;phase:'lobby'|'playing'|'finished';players:RuntimePlayer[];turn:number;events:{id:string;text:string;tone?:string}[];settings:Record<string,string|number|boolean>;deck:Card[];stock:Card[];waste:Card[];tableau:Card[][];dealer?:{hand:Card[];revealed:boolean};community:Card[];street?:'preflop'|'flop'|'turn'|'river'|'showdown';checked:Record<string,boolean>;winner?:string;revealedCards:Record<string,boolean>;results?:Record<string,string>};
 export type RuntimeAction={type:'START'|'HIT'|'STAND'|'DRAW'|'REVEAL'|'CHECK';actorId:string;seed?:number};
 const uid=()=>globalThis.crypto?.randomUUID?.()??`event-${Date.now()}-${Math.random()}`;

@@ -1,7 +1,23 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { createDeck, type Card } from '../lib/cards/deck';
+import { useEffect, useRef, useState } from 'react';
+import type { Card } from '../lib/cards/deck';
+import { CardPicker } from './cardfall/CardPicker';
+import { ToppledPool } from './cardfall/ToppledPool';
+import { ToppleAnimation } from './cardfall/ToppleAnimation';
+import { ActivityFeed } from './cardfall/ActivityFeed';
+import { RulesDialog } from './RulesDialog';
+import { NotebookPanel } from './cardfall/NotebookPanel';
+import {
+  addQuestionNote,
+  loadNotebook,
+  saveNotebook,
+  setAnswer,
+  toggleNote,
+  updateAnnotation,
+  clearNotebook,
+  type NotebookNote,
+} from '../lib/games/cardfall/notebook';
 import type { CardfallState } from '../lib/games/cardfall/engine';
 import type { RuntimeState } from '../lib/games/runtime';
 import { GAME_CATALOG, defaultSettings, gameById, normalizeSettings, type GameId } from '../lib/games/catalog';
@@ -10,7 +26,7 @@ type Screen = 'lobby' | 'room';
 type State = CardfallState | RuntimeState;
 type ServerMessage =
   | { type: 'WELCOME'; sessionToken: string; playerId: string; hostId: string }
-  | { type: 'STATE'; version: number; hostId: string; gameId: GameId; state: State }
+  | { type: 'STATE'; version: number; hostId: string; gameId: GameId; state: State; presence?: string[] }
   | { type: 'ERROR'; message: string };
 
 const PLAYER_KEY = 'card-table-player';
@@ -49,11 +65,19 @@ export function TableView() {
   const [error, setError] = useState('');
   const [question, setQuestion] = useState('');
   const [target, setTarget] = useState('');
-  const [guess, setGuess] = useState('');
+  const [guessResetKey, setGuessResetKey] = useState(0);
+  const [guessPending, setGuessPending] = useState(false);
+  const pendingGuess = useRef<{ targetId: string; cardId: string } | null>(null);
   const [tab, setTab] = useState<'ask' | 'guess'>('ask');
   const [answering, setAnswering] = useState(false);
   const [chatDraft, setChatDraft] = useState('');
+  const [notebookOpen, setNotebookOpen] = useState(false);
+  const [notebookNotes, setNotebookNotes] = useState<NotebookNote[]>([]);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [hostId, setHostId] = useState('');
+  const [presence, setPresence] = useState<string[]>([]);
+  const [ready, setReady] = useState(false);
   const socket = useRef<WebSocket | null>(null);
   const sessionToken = useRef('');
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -61,7 +85,6 @@ export function TableView() {
   const screenRef = useRef<Screen>('lobby');
   const [me, setMe] = useState(stableId);
   const meRef = useRef(me);
-  const cards = useMemo(() => createDeck(), []);
 
   const connect = async (nextRoom: string, displayName: string, gameId: GameId, gameSettings: Record<string, string | number | boolean>) => {
     const config = await fetch('/api/config', { cache: 'no-store' }).then((response) => response.json() as Promise<{ realtimeUrl: string }>);
@@ -96,6 +119,12 @@ export function TableView() {
         setState(message.state);
         setVersion(message.version);
         setHostId(message.hostId);
+        setPresence(message.presence ?? []);
+        if (pendingGuess.current) {
+          pendingGuess.current = null;
+          setGuessPending(false);
+          setGuessResetKey((key) => key + 1);
+        }
         setAnswering(false);
         setError('');
       } else {
@@ -192,6 +221,59 @@ export function TableView() {
     setChatDraft('');
   };
 
+  useEffect(() => {
+    if (roomGame !== 'cardfall' || !room || !me) return;
+    setNotebookNotes(loadNotebook(room, me));
+  }, [roomGame, room, me]);
+
+  useEffect(() => {
+    if (roomGame !== 'cardfall' || !room || !me) return;
+    saveNotebook(room, me, notebookNotes);
+  }, [roomGame, room, me, notebookNotes]);
+
+  useEffect(() => {
+    if (roomGame !== 'cardfall' || !cardfallState || !me) return;
+    setNotebookNotes((notes) => {
+      const players = cardfallState.players;
+      return cardfallState.events.reduce((current, event) => {
+        const withQuestion = addQuestionNote(current, event, me, players.find((player) => player.id === event.targetId)?.name);
+        return setAnswer(withQuestion, event, me);
+      }, notes);
+    });
+  }, [roomGame, cardfallState, me]);
+
+  useEffect(() => {
+    if (roomGame !== 'cardfall' || !cardfallState || !me) return;
+    const player = cardfallState.players.find((p) => p.id === me);
+    if (player) setReady(player.ready ?? false);
+  }, [roomGame, cardfallState, me]);
+
+  const toggleNotebookNote = (noteId: string) => setNotebookNotes((notes) => toggleNote(notes, noteId));
+  const updateNotebookAnnotation = (noteId: string, annotation: string) => setNotebookNotes((notes) => updateAnnotation(notes, noteId, annotation));
+  const clearNotebookNotes = () => setNotebookNotes(clearNotebook());
+  const toggleReady = () => {
+    const next = !ready;
+    setReady(next);
+    send({ type: 'READY', ready: next });
+  };
+  const copyRoomCode = async () => {
+    try {
+      await navigator.clipboard.writeText(room);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API may be unavailable; select the code as fallback
+      const codeEl = document.querySelector('.invite-code');
+      if (codeEl) {
+        const range = document.createRange();
+        range.selectNodeContents(codeEl);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+    }
+  };
+
   if (screen === 'lobby') return (
     <div className="shell lobby-shell">
       <header className="topbar"><div className="brand"><span className="mark">✦</span><span>Card Table <b>Arena</b></span></div><span className="safe-pill">GUEST PLAY · NO ACCOUNT · PLAY MONEY</span></header>
@@ -214,10 +296,10 @@ export function TableView() {
     const runtimeActive = runtimeState?.players[runtimeState.turn];
     const runtimeAction = roomGame === 'blackjack' ? 'HIT' : roomGame === 'solitaire' ? 'DRAW' : roomGame === 'highcard' ? 'REVEAL' : 'CHECK';
     const actionLabel = roomGame === 'blackjack' ? 'Hit' : roomGame === 'solitaire' ? 'Draw' : roomGame === 'highcard' ? 'Reveal card' : 'Check';
-    return <div className="shell"><header className="topbar"><div className="brand"><button className="back-button" onClick={leave}>←</button><span className="mark">✦</span><span>Card Table <b>Arena</b></span></div><div className="mode"><span className={`live-dot ${connected ? 'online' : ''}`} /><span className="sync-label">{syncing ? 'SYNCING' : 'LIVE'}</span><span className="divider" /> {definition.name.toUpperCase()} <span className="divider" /> ROOM <strong>{room}</strong></div><button className="ghost" onClick={() => setError(definition.rules.join(' '))}>Rules <span>?</span></button></header>
+    return <div className="shell"><header className="topbar"><div className="brand"><button className="back-button" onClick={leave}>←</button><span className="mark">✦</span><span>Card Table <b>Arena</b></span></div><div className="mode"><span className={`live-dot ${connected ? 'online' : ''}`} /><span className="sync-label">{syncing ? 'SYNCING' : 'LIVE'}</span><span className="divider" /> {definition.name.toUpperCase()} <span className="divider" /> ROOM <strong>{room}</strong></div><button className="ghost" onClick={() => setRulesOpen(true)}>Rules <span>?</span></button></header>
       <main className="room-shell"><div className="room-heading"><div><p className="eyebrow">{definition.name.toUpperCase()} · PLAY ROOM</p><h1><em>{definition.name}</em></h1><p className="sub">{runtimeState?.phase === 'playing' ? `Version ${version}. ${runtimeActive?.name ?? 'The table'} is up.` : 'Invite your friends, then start when the table is ready.'}</p></div><div className={`connection-card ${connected ? 'connected' : ''}`}><span className="connection-pulse" /><div><b>{connected ? 'Table connected' : 'Table offline'}</b><small>{connected ? `${runtimePlayers.length} players · Version ${version}` : 'Reconnecting automatically'}</small></div></div></div>
         <section className="runtime-board"><div className="runtime-board-head"><div><span className="panel-kicker">{definition.name.toUpperCase()}</span><h2>{isLobby ? 'Waiting room' : runtimeState?.phase === 'finished' ? 'Round complete' : 'Your table'}</h2></div><span className="mode-pill">{definition.players}</span></div><div className="runtime-players">{runtimePlayers.map((player, index) => <div className={`runtime-player ${runtimeActive?.id === player.id ? 'current' : ''}`} key={player.id}><span className="avatar">{player.name[0]?.toUpperCase()}</span><div><strong>{player.name}{player.id === me ? ' (you)' : ''}</strong><small>{player.hand.length ? `${player.hand.length} private cards` : isLobby ? 'ready' : 'in play'}</small></div><span className="runtime-seat-number">{runtimeActive?.id === player.id ? 'NOW' : String(index + 1).padStart(2, '0')}</span></div>)}</div>{roomGame === 'blackjack' && <div className="runtime-zone dealer-zone"><span className="panel-kicker">DEALER</span><div className="runtime-cards">{runtimeState?.dealer?.hand.map((card) => <span className="runtime-card" key={card.id}>{displayCard(card)}</span>)}</div><small>{runtimeState?.dealer?.revealed ? 'Dealer hand revealed' : 'One dealer card stays hidden'}</small></div>}{roomGame === 'holdem' && <div className="runtime-zone"><span className="panel-kicker">COMMUNITY · {runtimeState?.street?.toUpperCase()}</span><div className="runtime-cards">{runtimeState?.community.map((card) => <span className="runtime-card" key={card.id}>{displayCard(card)}</span>)}</div></div>}{roomGame === 'solitaire' && <div className="runtime-zone solitaire-zone"><div><span className="panel-kicker">STOCK</span><div className="runtime-card">{runtimeState?.stock.length ?? 0} cards</div></div><div><span className="panel-kicker">WASTE</span><div className="runtime-card">{runtimeState?.waste.at(-1) ? displayCard(runtimeState.waste.at(-1)!) : 'Empty'}</div></div></div>}{roomGame === 'highcard' && <div className="runtime-zone"><span className="panel-kicker">REVEAL STATUS</span><p>{Object.keys(runtimeState?.revealedCards ?? {}).length} of {runtimePlayers.length} players revealed</p></div>}<div className="runtime-private"><span className="panel-kicker">YOUR PRIVATE AREA</span><div className="runtime-cards">{runtimeLocal?.hand.map((card) => <span className="runtime-card" key={card.id}>{displayCard(card)}</span>)}{!runtimeLocal?.hand.length && <span className="runtime-empty">Your cards will appear here when the round starts.</span>}</div></div></section>
-        <section className="below-table"><div className="controls"><div className="control-head"><div><p className="eyebrow">YOUR MOVE</p><h2>{isLobby ? 'Invite your table' : runtimeActive?.id === me ? 'You are up' : 'Watch the table'}</h2></div>{isLobby && isHost && <button className="primary" disabled={(roomGame === 'holdem' && runtimePlayers.length < 2)} onClick={() => send({ type: 'START_GAME' })}>Start {definition.name} <span>→</span></button>}{!isLobby && runtimeActive?.id === me && <button className="primary" onClick={() => send({ type: runtimeAction })}>{actionLabel} <span>→</span></button>}</div>{isLobby && <div className="waiting invite-box"><span className="invite-code">{room}</span><button className="secondary" onClick={() => navigator.clipboard?.writeText(room)}>Copy room code</button><p>Send this code to the people you want at the table.</p></div>}{!isLobby && runtimeState?.phase === 'playing' && <div className="waiting">{runtimeActive?.id === me ? `Your action: ${actionLabel}.` : `${runtimeActive?.name} is taking the turn.`}</div>}</div><aside className="activity-panel"><div className="activity-head"><div><p className="eyebrow">TABLE CHAT</p><h2>Activity</h2></div><span>{runtimeState?.events.length ?? 0} updates</span></div><div className="activity-feed">{runtimeState?.events.slice(-8).map((event) => <div className={`activity-line ${event.tone ?? ''}`} key={event.id}><span className="activity-dot" /><span>{event.text}</span></div>)}{!runtimeState?.events.length && <p className="activity-empty">Game events and messages will appear here for everyone.</p>}</div><div className="chat-compose"><input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendChat(); }} placeholder="Send a message to the table…" maxLength={300} /><button disabled={!chatDraft.trim() || !connected} onClick={sendChat}>Send</button></div></aside></section>{error && <div className="form-error inline-error">{error}</div>}</main><footer><span>PLAY MONEY · JUST FOR FUN</span><span>{connected ? 'CONNECTED' : 'OFFLINE'} <i /> {definition.name}</span></footer></div>;
+        <section className="below-table"><div className="controls"><div className="control-head"><div><p className="eyebrow">YOUR MOVE</p><h2>{isLobby ? 'Invite your table' : runtimeActive?.id === me ? 'You are up' : 'Watch the table'}</h2></div>{isLobby && isHost && <button className="primary" disabled={(roomGame === 'holdem' && runtimePlayers.length < 2)} onClick={() => send({ type: 'START_GAME' })}>Start {definition.name} <span>→</span></button>}{!isLobby && runtimeActive?.id === me && <button className="primary" onClick={() => send({ type: runtimeAction })}>{actionLabel} <span>→</span></button>}</div>{isLobby && <div className="waiting invite-box"><span className="invite-code">{room}</span><button className="secondary" onClick={() => navigator.clipboard?.writeText(room)}>Copy room code</button><p>Send this code to the people you want at the table.</p></div>}{!isLobby && runtimeState?.phase === 'playing' && <div className="waiting">{runtimeActive?.id === me ? `Your action: ${actionLabel}.` : `${runtimeActive?.name} is taking the turn.`}</div>}</div><aside className="activity-panel"><div className="activity-head"><div><p className="eyebrow">TABLE CHAT</p><h2>Activity</h2></div><span>{runtimeState?.events.length ?? 0} updates</span></div><div className="activity-feed">{runtimeState?.events.slice(-8).map((event) => <div className={`activity-line ${event.tone ?? ''}`} key={event.id}><span className="activity-dot" /><span>{event.text}</span></div>)}{!runtimeState?.events.length && <p className="activity-empty">Game events and messages will appear here for everyone.</p>}</div><div className="chat-compose"><input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendChat(); }} placeholder="Send a message to the table…" maxLength={300} /><button disabled={!chatDraft.trim() || !connected} onClick={sendChat}>Send</button></div></aside></section>{error && <div className="form-error inline-error">{error}</div>}</main><footer><span>PLAY MONEY · JUST FOR FUN</span><span>{connected ? 'CONNECTED' : 'OFFLINE'} <i /> {definition.name}</span></footer><RulesDialog open={rulesOpen} gameName={definition.name} rules={definition.rules} onClose={() => setRulesOpen(false)} /></div>;
   }
 
   const cardfallActive = cardfallState?.players[cardfallState.turn];
@@ -225,10 +307,23 @@ export function TableView() {
   const cardfallOpponents = cardfallState?.players.filter((player) => player.id !== me) ?? [];
   const cardfallTarget = target || cardfallOpponents.find((player) => player.hand.length)?.id || '';
   const play = (payload: Record<string, unknown>) => send(payload);
+  const confirmGuess = (targetId: string, cardId: string) => {
+    if (pendingGuess.current) return;
+    pendingGuess.current = { targetId, cardId };
+    setGuessPending(true);
+    play({ type: 'GUESS', targetId, cardId });
+  };
 
-  return <div className="shell"><header className="topbar"><div className="brand"><button className="back-button" onClick={leave}>←</button><span className="mark">✦</span><span>Card Table <b>Arena</b></span></div><div className="mode"><span className={`live-dot ${connected ? 'online' : ''}`} /><span className="sync-label">{syncing ? 'SYNCING' : 'LIVE'}</span><span className="divider" /> CARD<span className="muted">FALL</span><span className="divider" /> ROOM <strong>{room}</strong></div><button className="ghost" onClick={() => setError('Ask a player about their hidden cards, or guess an exact card.')}>Rules <span>?</span></button></header>
+  return <div className="shell"><header className="topbar"><div className="brand"><button className="back-button" onClick={leave}>←</button><span className="mark">✦</span><span>Card Table <b>Arena</b></span></div><div className="mode"><span className={`live-dot ${connected ? 'online' : ''}`} /><span className="sync-label">{syncing ? 'SYNCING' : 'LIVE'}</span><span className="divider" /> CARD<span className="muted">FALL</span><span className="divider" /> ROOM <strong>{room}</strong></div><button className="ghost" onClick={() => setRulesOpen(true)}>Rules <span>?</span></button></header>
     <main className="room-shell"><div className="room-heading"><div><p className="eyebrow">CARD FALL · ROUND {cardfallState?.phase === 'playing' || cardfallState?.phase === 'finished' ? '01' : '—'}</p><h1>{cardfallState?.phase === 'playing' && cardfallActive ? <><em>{cardfallActive.name}</em> is playing</> : cardfallState?.phase === 'finished' ? 'Table complete' : 'Waiting for the table'}</h1><p className="sub">{cardfallState?.phase === 'playing' && cardfallActive?.id === me ? 'Your turn: make a question or guess an exact card.' : cardfallState?.phase === 'playing' ? `Watch ${cardfallActive?.name} make a move. The table will update live.` : 'Share the room code, then deal when everyone is ready.'}</p></div><div className={`connection-card ${connected ? 'connected' : ''}`}><span className="connection-pulse" /><div><b>{connected ? syncing ? 'Resyncing table' : 'Table connected' : 'Table offline'}</b><small>{connected ? `Version ${version} · ${cardfallState?.players.length ?? 0} players` : 'Reconnecting automatically'}</small></div></div></div>
-      <section className="turn-rail"><div className="turn-rail-label"><span>TURN ORDER</span><b>{cardfallState?.phase === 'playing' && cardfallActive ? `${cardfallActive.name.toUpperCase()}'S TURN NOW` : 'TABLE SETUP'}</b></div><div className="turn-track">{cardfallState?.players.map((player, index) => <div className={`turn-player ${player.id === cardfallActive?.id ? 'current' : ''} ${player.id === me ? 'self' : ''}`} key={player.id}><div className="turn-number">{player.id === cardfallActive?.id ? 'NOW' : String(index + 1).padStart(2, '0')}</div><span className="avatar">{player.name[0]?.toUpperCase()}</span><div><strong>{player.name}{player.id === me ? ' (you)' : ''}</strong><small>{player.hand.length ? `${player.hand.length} cards remaining` : cardfallState.phase === 'lobby' ? 'ready' : 'out'}</small></div>{player.id === cardfallActive?.id && <span className="turn-chevron">→</span>}</div>)}</div></section>
-      <section className="felt"><div className="felt-glow" /><div className="table-label"><span>TABLE CENTER</span><span className="turn-label">{cardfallState?.phase === 'playing' && cardfallActive ? `NOW PLAYING · ${cardfallActive.name.toUpperCase()}` : 'WAITING FOR DEAL'}</span></div>{cardfallOpponents.map((player, index) => <div className={`seat seat-${(index % 2) + 1}`} key={player.id}><div className="seat-head"><span className="avatar">{player.name[0]?.toUpperCase()}</span><div><b>{player.name}</b><small>{player.hand.length ? `${player.hand.length} cards hidden` : cardfallState?.phase === 'lobby' ? 'READY' : 'TOPPLED'}</small></div>{cardfallActive?.id === player.id && cardfallState?.phase === 'playing' && <span className="your-turn">PLAYING NOW</span>}</div><div className="back-row">{Array.from({ length: Math.min(player.hand.length || 5, 5) }).map((_, index) => <div className="mini-back" key={index}>✦</div>)}</div></div>)}<div className="center-stack"><div className="table-ring" /><div className="table-shadow" /><div className="discard"><span>✦</span><small>RESOLVED<br />CARDS</small></div></div><div className="my-seat"><div className="my-head"><div className="avatar you">{cardfallLocal?.name[0]?.toUpperCase() || 'Y'}</div><div><b>{cardfallLocal?.name || name || 'You'}</b><small>{cardfallLocal?.hand.length ? `${cardfallLocal.hand.length} cards in hand` : 'Waiting for deal'}</small></div><span className="score">{cardfallLocal?.correctGuesses || 0} <small>TOPPLES</small></span></div><div className="hand">{cardfallLocal?.hand.length ? cardfallLocal.hand.map((card) => <div className="playing-card" key={card.id}><small>{card.rank}</small><strong className={card.suit === '♥' || card.suit === '♦' ? 'red' : ''}>{card.suit}</strong></div>) : <div className="empty-hand">Your private hand appears here after the host deals.</div>}</div></div></section>
-      <section className="below-table"><div className="controls"><div className="control-head"><div><p className="eyebrow">YOUR MOVE</p><h2>{!cardfallState || cardfallState.phase === 'lobby' ? 'Invite your table' : cardfallState.phase === 'finished' ? 'The table has spoken' : cardfallActive?.id === me ? 'You are up' : 'Watch the table'}</h2></div>{cardfallState?.phase === 'lobby' && hostId === me && <button className="primary" disabled={cardfallState.players.length < 2} onClick={() => send({ type: 'START_GAME' })}>{cardfallState.players.length < 2 ? 'Need one more player' : 'Deal the cards'} <span>→</span></button>}{cardfallState?.phase === 'lobby' && hostId !== me && <span className="waiting host-note">Waiting for the host to deal</span>}{cardfallState?.phase === 'finished' && <button className="secondary" onClick={leave}>Leave table</button>}{cardfallState?.phase === 'playing' && cardfallActive?.id === me && <div className="tabs"><button className={tab === 'ask' ? 'selected' : ''} onClick={() => setTab('ask')}>Ask a question</button><button className={tab === 'guess' ? 'selected' : ''} onClick={() => setTab('guess')}>Guess a card</button></div>}</div>{cardfallState?.phase === 'lobby' && <div className="waiting invite-box"><span className="invite-code">{room}</span><button className="secondary" onClick={() => navigator.clipboard?.writeText(room)}>Copy room code</button><p>Send this code to the people you want at the table.</p></div>}{cardfallState?.phase === 'playing' && cardfallState.pendingQuestion?.targetId === me && <div className="answer-panel"><p><b>{cardfallState.players.find((player) => player.id === cardfallState.pendingQuestion?.askerId)?.name}</b> asks: “{cardfallState.pendingQuestion.question}”</p><div><button className="yes-button" disabled={answering} onClick={() => answer(true)}>Yes</button><button className="no-button" disabled={answering} onClick={() => answer(false)}>No</button></div></div>}{cardfallState?.phase === 'playing' && cardfallActive?.id === me && !cardfallState.pendingQuestion && <div className="action-panel">{tab === 'ask' ? <><label>Ask <select value={cardfallTarget} onChange={(event) => setTarget(event.target.value)}>{cardfallOpponents.filter((player) => player.hand.length).map((player) => <option value={player.id} key={player.id}>{player.name}</option>)}</select> something about their hand</label><div className="input-row"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="e.g. Do you have a red card?" /><button disabled={!question.trim() || !cardfallTarget} onClick={() => play({ type: 'ASK', targetId: cardfallTarget, question })}>Ask <span>↗</span></button></div><p className="hint">They can only answer <b>YES</b> or <b>NO</b>. Everyone at the table sees the question.</p></> : <><label>Guess a card in <select value={cardfallTarget} onChange={(event) => setTarget(event.target.value)}>{cardfallOpponents.filter((player) => player.hand.length).map((player) => <option value={player.id} key={player.id}>{player.name}</option>)}</select>’s hand</label><div className="input-row"><select value={guess} onChange={(event) => setGuess(event.target.value)}><option value="">Choose a card…</option>{cards.map((card) => <option value={card.id} key={card.id}>{card.rank}{card.suit}</option>)}</select><button disabled={!guess || !cardfallTarget} onClick={() => play({ type: 'GUESS', targetId: cardfallTarget, cardId: guess })}>Make guess <span>↗</span></button></div><p className="hint">Correct guesses topple a card and send it to the resolved pile.</p></>}</div>}{cardfallState?.phase === 'playing' && cardfallActive?.id !== me && <div className="waiting">{cardfallActive?.name} is thinking. The table will update when they make a move.</div>}</div><aside className="activity-panel"><div className="activity-head"><div><p className="eyebrow">TABLE CHAT</p><h2>Activity</h2></div><span>{cardfallState?.events.length || 0} updates</span></div><div className="activity-feed">{cardfallState?.events.slice(-8).map((event) => <div className={`activity-line ${event.tone || ''}`} key={event.id}><span className="activity-dot" /><span>{event.text}</span></div>)}{!cardfallState?.events.length && <p className="activity-empty">Questions, answers, guesses, and messages will appear here for everyone.</p>}</div><div className="chat-compose"><input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendChat(); }} placeholder="Send a message to the table…" maxLength={300} /><button disabled={!chatDraft.trim() || !connected} onClick={sendChat}>Send</button></div></aside></section>{error && <div className="form-error inline-error">{error}</div>}</main><footer><span>PLAY MONEY · JUST FOR FUN</span><span>{connected ? 'CONNECTED' : 'OFFLINE'} <i /> Cardfall</span></footer></div>;
+      <section className="turn-rail"><div className="turn-rail-label"><span>TURN ORDER</span><b>{cardfallState?.phase === 'playing' && cardfallActive ? `${cardfallActive.name.toUpperCase()}'S TURN NOW` : 'TABLE SETUP'}</b></div><div className="turn-track">{cardfallState?.players.map((player, index) => <div className={`turn-player ${player.id === cardfallActive?.id ? 'current' : ''} ${player.id === me ? 'self' : ''}`} key={player.id}><div className="turn-number">{player.id === cardfallActive?.id ? 'NOW' : String(index + 1).padStart(2, '0')}</div><span className="avatar">{player.name[0]?.toUpperCase()}</span><div><strong>{player.name}{player.id === me ? ' (you)' : ''}</strong><small>{player.hand.length ? `${player.hand.length} cards remaining` : cardfallState.phase === 'lobby' ? 'ready' : 'out'}</small>{presence.includes(player.id) ? <span className="presence-dot online" aria-label="Online" /> : <span className="presence-dot offline" aria-label="Offline" />}{player.id === hostId && <span className="host-badge">HOST</span>}</div>{player.id === cardfallActive?.id && <span className="turn-chevron">→</span>}</div>)}</div></section>
+      <section className="felt"><div className="felt-glow" /><div className="table-label"><span>TABLE CENTER</span><span className="turn-label">{cardfallState?.phase === 'playing' && cardfallActive ? `NOW PLAYING · ${cardfallActive.name.toUpperCase()}` : 'WAITING FOR DEAL'}</span></div>{cardfallOpponents.map((player, index) => <div className={`seat seat-${(index % 2) + 1}`} key={player.id}><div className="seat-head"><span className="avatar">{player.name[0]?.toUpperCase()}</span><div><b>{player.name}</b><small>{player.hand.length ? `${player.hand.length} cards hidden` : cardfallState?.phase === 'lobby' ? 'READY' : 'TOPPLED'}</small></div>{cardfallActive?.id === player.id && cardfallState?.phase === 'playing' && <span className="your-turn">PLAYING NOW</span>}</div><div className="back-row">{Array.from({ length: Math.min(player.hand.length || 5, 5) }).map((_, index) => <div className="mini-back" key={index}>✦</div>)}</div></div>)}<div className="center-stack"><div className="table-ring" /><div className="table-shadow" /><ToppledPool cards={cardfallState?.toppledCards ?? []} /><div className="discard"><span>✦</span><small>RESOLVED<br />CARDS</small></div></div><ToppleAnimation lastTopple={cardfallState?.lastTopple} cards={cardfallState?.toppledCards ?? []} /><div className="my-seat"><div className="my-head"><div className="avatar you">{cardfallLocal?.name[0]?.toUpperCase() || 'Y'}</div><div><b>{cardfallLocal?.name || name || 'You'}</b><small>{cardfallLocal?.hand.length ? `${cardfallLocal.hand.length} cards in hand` : 'Waiting for deal'}</small></div><span className="score">{cardfallLocal?.correctGuesses || 0} <small>TOPPLES</small></span></div><div className="hand">{cardfallLocal?.hand.length ? cardfallLocal.hand.map((card) => <div className="playing-card" key={card.id}><small>{card.rank}</small><strong className={card.suit === '♥' || card.suit === '♦' ? 'red' : ''}>{card.suit}</strong></div>) : <div className="empty-hand">Your private hand appears here after the host deals.</div>}</div></div></section>
+      <section className="below-table"><div className="controls"><div className="control-head"><div><p className="eyebrow">YOUR MOVE</p><h2>{!cardfallState || cardfallState.phase === 'lobby' ? 'Invite your table' : cardfallState.phase === 'finished' ? 'The table has spoken' : cardfallActive?.id === me ? 'You are up' : 'Watch the table'}</h2></div>{cardfallState?.phase === 'lobby' && hostId === me && <button className="primary" disabled={cardfallState.players.length < 2} onClick={() => send({ type: 'START_GAME' })}>{cardfallState.players.length < 2 ? 'Need one more player' : 'Deal the cards'} <span>→</span></button>}{cardfallState?.phase === 'lobby' && hostId !== me && <span className="waiting host-note">Waiting for the host to deal</span>}{cardfallState?.phase === 'finished' && <div className="finish-summary"><div><span className="panel-kicker">FINAL RESULT</span><h2>{cardfallState.events.find((e) => e.kind === 'win')?.text ?? 'Table complete'}</h2></div><div className="finish-stats"><div><strong>{cardfallState.toppledCards.length}</strong><small>CARDS TOPPLED</small></div><div><strong>{cardfallState.players.filter((p) => p.hand.length).length}</strong><small>PLAYERS STANDING</small></div><div><strong>{cardfallState.players.reduce((sum, p) => sum + p.correctGuesses, 0)}</strong><small>TOTAL TOPPLES</small></div></div><button className="secondary" onClick={leave}>Leave table</button></div>}{cardfallState?.phase === 'playing' && cardfallActive?.id === me && <div className="tabs"><button className={tab === 'ask' ? 'selected' : ''} onClick={() => setTab('ask')}>Ask a question</button><button className={tab === 'guess' ? 'selected' : ''} onClick={() => setTab('guess')}>Guess a card</button></div>}</div>{cardfallState?.phase === 'lobby' && <div className="waiting invite-box"><span className="invite-code">{room}</span><button className="secondary" onClick={copyRoomCode}>{copied ? 'Copied!' : 'Copy room code'}</button><p>Send this code to the people you want at the table.</p></div>}{cardfallState?.phase === 'lobby' && <div className="ready-row"><button className={`ready-toggle ${ready ? 'ready' : ''}`} type="button" onClick={toggleReady}>{ready ? 'Ready' : 'Mark ready'}</button></div>}{cardfallState?.phase === 'playing' && cardfallState.pendingQuestion?.targetId === me && <div className="answer-panel"><p><b>{cardfallState.players.find((player) => player.id === cardfallState.pendingQuestion?.askerId)?.name}</b> asks: “{cardfallState.pendingQuestion.question}”</p><div><button className="yes-button" disabled={answering} onClick={() => answer(true)}>Yes</button><button className="no-button" disabled={answering} onClick={() => answer(false)}>No</button></div></div>}{cardfallState?.phase === 'playing' && cardfallActive?.id === me && !cardfallState.pendingQuestion && <div className="action-panel">{tab === 'ask' ? <><label>Ask <select value={cardfallTarget} onChange={(event) => setTarget(event.target.value)}>{cardfallOpponents.filter((player) => player.hand.length).map((player) => <option value={player.id} key={player.id}>{player.name}</option>)}</select> something about their hand</label><div className="input-row"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="e.g. Do you have a red card?" /><button disabled={!question.trim() || !cardfallTarget} onClick={() => play({ type: 'ASK', targetId: cardfallTarget, question })}>Ask <span>↗</span></button></div><p className="hint">They can only answer <b>YES</b> or <b>NO</b>. Everyone at the table sees the question.</p></> : <><CardPicker
+   resetKey={guessResetKey}
+   targets={cardfallOpponents.filter((player) => player.hand.length).map((player) => ({ id: player.id, name: player.name, handCount: player.hand.length }))}
+   targetId={cardfallTarget}
+   onTargetChange={setTarget}
+   onConfirm={confirmGuess}
+   disabled={guessPending}
+ /><p className="hint">Correct guesses topple a card and send it to the resolved pile.</p></>}</div>}{cardfallState?.phase === 'playing' && cardfallActive?.id !== me && <div className="waiting">{cardfallActive?.name} is thinking. The table will update when they make a move.</div>}</div><aside className="activity-panel"><div className="activity-head"><div><p className="eyebrow">TABLE CHAT</p><h2>Activity</h2></div><span>{cardfallState?.events.length || 0} updates</span></div><ActivityFeed events={cardfallState?.events ?? []} /><div className="chat-compose"><input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendChat(); }} placeholder="Send a message to the table…" maxLength={300} /><button disabled={!chatDraft.trim() || !connected} onClick={sendChat}>Send</button></div></aside><div className="notebook-launcher"><button className="secondary" type="button" onClick={() => setNotebookOpen(true)}>Open deduction notebook</button><small>{notebookNotes.length} private {notebookNotes.length === 1 ? 'note' : 'notes'}</small></div><NotebookPanel open={notebookOpen} notes={notebookNotes} players={cardfallState?.players ?? []} onClose={() => setNotebookOpen(false)} onToggle={toggleNotebookNote} onAnnotationChange={updateNotebookAnnotation} onClear={clearNotebookNotes} /></section>{error && <div className="form-error inline-error">{error}</div>}</main><footer><span>PLAY MONEY · JUST FOR FUN</span><span>{connected ? 'CONNECTED' : 'OFFLINE'} <i /> Cardfall</span></footer><RulesDialog open={rulesOpen} gameName="Cardfall" rules={['Ask a player about their hidden cards, or guess an exact card.', 'Correct guesses topple a card and send it to the resolved pile.', 'The table rotates turns after each question, answer, or guess.']} onClose={() => setRulesOpen(false)} /></div>;
 }
