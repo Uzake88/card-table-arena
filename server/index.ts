@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { loadRooms, saveRoom, deleteRoom } from './persistence';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initial, reduce, CardfallState, Action } from '../lib/games/cardfall/engine';
@@ -7,17 +8,34 @@ import { commandSchema } from '../lib/protocol';
 import { normalizeSettings } from '../lib/games/catalog';
 import { addPlayer, createLobby, projectRuntime, reduceRuntime, type RuntimeState, type RuntimeGameId, type RuntimeAction } from '../lib/games/runtime';
 
-type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'CHAT'|'RESYNC'|'READY'|'HIT'|'STAND'|'DRAW'|'REVEAL'|'CHECK'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; gameId?:string; settings?:Record<string,string|number|boolean>; message?:string; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string; ready?:boolean };
+type Command = { type:'JOIN_ROOM'|'START_GAME'|'ASK'|'ANSWER'|'GUESS'|'CHAT'|'RESYNC'|'READY'|'HIT'|'STAND'|'DRAW'|'REVEAL'|'CHECK'|'BET'; commandId?:string; roomCode:string; playerId:string; sessionToken?:string; name?:string; gameId?:string; settings?:Record<string,string|number|boolean>; message?:string; lastVersion?:number; cardsPerPlayer?:number; targetId?:string; question?:string; yes?:boolean; cardId?:string; ready?:boolean; amount?:number };
 type Client = { socket:WebSocket; playerId:string; roomCode:string; sessionToken:string };
 type PlayerSession = { playerId:string; token:string };
 type CommandRecord = { playerId:string; fingerprint:string };
 type Room = { code:string; hostId:string; gameId:string; settings:Record<string,string|number|boolean>; state:CardfallState|RuntimeState; version:number; clients:Set<Client>; sessions:Map<string,PlayerSession>; seen:Map<string,CommandRecord>; presence:Set<string> };
 const rooms=new Map<string,Room>();
+// Restore persisted rooms from disk (survives server restarts)
+const persistedRooms = loadRooms();
+for (const [code, data] of persistedRooms) {
+  rooms.set(code, {
+    code: data.code,
+    hostId: data.hostId,
+    gameId: data.gameId,
+    settings: data.settings,
+    state: data.state as CardfallState | RuntimeState,
+    version: data.version,
+    clients: new Set(),
+    sessions: new Map(data.sessions.map(s => [s.playerId, { playerId: s.playerId, token: s.token }])),
+    seen: new Map(),
+    presence: new Set(),
+  });
+}
+console.log(`Restored ${persistedRooms.size} room(s) from disk`);
 const makeRoom=(code:string):Room=>{const r:Room={code,hostId:'',gameId:'cardfall',settings:normalizeSettings('cardfall',{}),state:initial([]),version:0,clients:new Set(),sessions:new Map(),seen:new Map(),presence:new Set()}; rooms.set(code,r); return r;};
 const getRoom=(code:string)=>rooms.get(code)??makeRoom(code);
 function detachSocket(socket:WebSocket){for(const r of rooms.values())for(const c of [...r.clients])if(c.socket===socket)r.clients.delete(c);}
 function send(c:Client,r:Room){const state=r.gameId==='cardfall'?publicProjection(r.state as CardfallState,c.playerId):projectRuntime(r.state as RuntimeState,c.playerId);c.socket.send(JSON.stringify({type:'STATE',version:r.version,hostId:r.hostId,gameId:r.gameId,settings:r.settings,state,presence:[...r.presence]}));}
-function broadcast(r:Room){for(const c of r.clients)if(c.socket.readyState===WebSocket.OPEN)send(c,r);}
+function broadcast(r:Room){saveRoom({code:r.code,hostId:r.hostId,gameId:r.gameId,settings:r.settings,state:r.state,version:r.version,sessions:[...r.sessions.entries()].map(([playerId])=>({playerId,token:r.sessions.get(playerId)!.token}))});for(const c of r.clients)if(c.socket.readyState===WebSocket.OPEN)send(c,r);}
 function actionFor(cmd:Command, room:Room):Action|undefined{if(cmd.type==='START_GAME')return{type:'START',cardsPerPlayer:Number(room.settings.cardsPerPlayer??5)};if(cmd.type==='ASK')return{type:'ASK',actorId:cmd.playerId,targetId:cmd.targetId!,question:cmd.question!};if(cmd.type==='ANSWER')return{type:'ANSWER',actorId:cmd.playerId,yes:!!cmd.yes};if(cmd.type==='GUESS')return{type:'GUESS',actorId:cmd.playerId,targetId:cmd.targetId!,cardId:cmd.cardId!};}
 function validCommand(raw:unknown):Command{const parsed=commandSchema.safeParse(raw);if(!parsed.success)throw Error('Invalid room command');return parsed.data as Command;}
 const http=createServer((_,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({ok:true,rooms:rooms.size}))});
@@ -54,6 +72,33 @@ wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',ra
   }
   r.version++; r.seen.set(cmd.commandId,{playerId:sessionClient.playerId,fingerprint}); broadcast(r); return;
  }
+
+ if(cmd.type==='BET'){
+  if(typeof cmd.amount!=='number'||cmd.amount<1)throw Error('Bet amount must be at least 1');
+  const amount=cmd.amount;
+  if(r.gameId!=='blackjack'&&r.gameId!=='holdem')throw Error('Betting is not supported in this game');
+  const actor=(r.state as RuntimeState).players.find(p=>p.id===sessionClient.playerId);
+   if(!actor)throw Error('Player is not in this room');
+   const chips=actor.chips??0;
+   if(amount>chips)throw Error('Insufficient chips');
+   if(r.gameId==='blackjack'){
+    const bet=(r.state as RuntimeState).bets??{};
+    const state={...r.state as RuntimeState,bets:{...bet,[sessionClient.playerId]:amount}};
+    const allBet=state.players.every(p=>(state.bets?.[p.id]??0)>0);
+    if(allBet){r.state=reduceRuntime(state,{type:'START',actorId:sessionClient.playerId,seed:Date.now()});}
+    else{r.state=state;}
+   } else {
+    const currentPot: Array<{playerId:string;amount:number}> = Array.isArray((r.state as RuntimeState).pot) ? (r.state as RuntimeState).pot! : [];
+    const existing=currentPot.find(p=>p.playerId===sessionClient.playerId);
+    const next=existing?currentPot.map(p=>p.playerId===sessionClient.playerId?{...p,amount:p.amount+amount}:p):[...currentPot,{playerId:sessionClient.playerId,amount}];
+    const state={...r.state as RuntimeState,pot:next};
+    const required=Number((r.state as RuntimeState).settings?.startingChips??1000);
+    const allBet=state.players.every(p=>{const b=next.find(x=>x.playerId===p.id);return b!=null&&b.amount>=required});
+    if(allBet){r.state=reduceRuntime(state,{type:'START',actorId:sessionClient.playerId,seed:Date.now()});}
+    else{r.state=state;}
+   }
+  r.version++;r.seen.set(cmd.commandId,{playerId:sessionClient.playerId,fingerprint});broadcast(r);return;
+ }
  const prior=r.seen.get(cmd.commandId); if(prior){if(prior.playerId!==sessionClient.playerId||prior.fingerprint!==fingerprint)throw Error('Command id already used');send(sessionClient,r);return;}
  if(cmd.lastVersion!==undefined&&cmd.lastVersion!==r.version)throw Error('STALE_STATE');
  if(cmd.type==='CHAT'){
@@ -82,8 +127,7 @@ wss.on('connection',socket=>{let client:Client|undefined; socket.on('message',ra
     room.presence.delete(closingClient.playerId);
     if(room.hostId===closingClient.playerId){
      const nextHost=[...room.clients].map(c=>c.playerId).find(id=>id!==closingClient.playerId);
-     if(nextHost) room.hostId=nextHost;
-     else rooms.delete(room.code);
+     room.hostId=nextHost||'';
     }
     broadcast(room);
    }

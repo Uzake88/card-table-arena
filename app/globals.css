@@ -11,3 +11,10 @@
 .ready-toggle{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #c9cdc2;border-radius:5px;background:#fff;font-size:11px;min-width:44px;min-height:44px;width:44px;height:44px;justify-content:center}.ready-toggle.ready{background:#729c71;color:#fff;border-color:#729c71}.ready-toggle.ready::before{content:"✓"}.ready-toggle:not(.ready)::before{content:"○"}
 .finish-summary{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 22px;border:1px solid #d6bd79;background:#f8f3e3;margin-top:24px}.finish-summary h2{font-size:22px;margin:6px 0 0;letter-spacing:-.03em}.finish-stats{display:flex;gap:24px}.finish-stats div{display:flex;flex-direction:column;align-items:center}.finish-stats strong{font:24px 'DM Mono';color:var(--ink)}.finish-stats small{font:9px 'DM Mono';color:#8b8f84;letter-spacing:.08em;margin-top:3px}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.topple-flight,.topple-impact,.toppled-pool-button{animation:none!important;transform:none!important}.jump-latest{transition:none!important}}
+
+.bet-panel{border:1px solid #d6bd79;background:#f8f3e3;padding:16px 18px;margin-top:14px}
+.bet-panel-label span{display:block;margin-bottom:4px}.bet-panel-label p{margin:0;font-size:12px;color:#62675e;line-height:1.4}
+.bet-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+.bet-controls input{width:90px;padding:10px;border:1px solid var(--line);background:#fff;font-size:13px}
+.bet-quick{display:flex;gap:6px}.bet-hint{display:block;margin-top:8px;font-size:11px;color:#8b8f84}
+.bet-panel button:disabled{opacity:.45;cursor:not-allowed}

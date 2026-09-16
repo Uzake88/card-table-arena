@@ -470,6 +470,7 @@ test.describe('Card Table Arena guest multiplayer', () => {
     await context.close();
   });
 
+
   test('each advertised game opens its own playable room controls', async () => {
     const soloGames = [
       { name: 'Blackjack', room: 'Blackjack', control: 'Hit' },
